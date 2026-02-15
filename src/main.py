@@ -3,46 +3,95 @@ import cv2
 import torch
 import numpy as np
 from PIL import Image
+
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from realesrgan import RealESRGANer
 
+# =========================
+# デバイス設定
+# =========================
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f'Using device: {device}')
 
-input_folder = 'input_images'
-output_folder = 'output_images'
-os.makedirs(output_folder, exist_ok=True)
+# =========================
+# パス設定
+# =========================
+INPUT_DIR = 'input_images'
+OUTPUT_DIR = 'output_images'
+WEIGHTS_PATH = 'weights/RealESRGAN_x4plus_anime_6B.pth'
 
-def demosaic_preprocess(img):
-    img = cv2.medianBlur(img, 5)
-    img = cv2.bilateralFilter(img, 9, 75, 75)
-    return img
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# =========================
+# モザイク除去前処理
+# =========================
+def preprocess_for_mosaic(img_np):
+    """
+    モザイクのブロック角を軽くなだらかにする
+    """
+    return cv2.GaussianBlur(img_np, (3, 3), 0)
+
+# =========================
+# anime6b専用モデル定義
+# =========================
 model = RRDBNet(
-    num_in_ch=3, num_out_ch=3,
-    num_feat=64, num_block=23,
-    num_grow_ch=32, scale=4
+    num_in_ch=3,
+    num_out_ch=3,
+    num_feat=64,
+    num_block=6,   # ★ anime6bは6ブロック
+    num_grow_ch=32,
+    scale=4
 )
 
+# =========================
+# Upscaler 初期化
+# =========================
 upscaler = RealESRGANer(
     scale=4,
-    model_path='weights/RealESRGAN_x4plus_anime_6B.pth',
+    model_path=WEIGHTS_PATH,
     model=model,
-    tile=0,
-    tile_pad=32,
+    tile=128,        # モザイク対策
+    tile_pad=20,
     pre_pad=0,
-    half=(device == 'cuda'),
+    half=True if device == 'cuda' else False,
     device=device
 )
 
-for file in os.listdir(input_folder):
-    if file.lower().endswith(('.png', '.jpg', '.jpeg')):
-        img = cv2.imread(os.path.join(input_folder, file))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+# =========================
+# 画像処理
+# =========================
+for filename in os.listdir(INPUT_DIR):
 
-        img = demosaic_preprocess(img)
+    if not filename.lower().endswith(
+        ('.png', '.jpg', '.jpeg', '.bmp', '.webp')
+    ):
+        continue
 
-        try:
-            out, _ = upscaler.enhance(img)
-            Image.fromarray(out).save(os.path.join(output_folder, file))
-        except Exception as e:
-            print(f"失敗: {file} → {e}")
+    input_path = os.path.join(INPUT_DIR, filename)
+    output_path = os.path.join(OUTPUT_DIR, filename)
+
+    try:
+        print(f'🔄 Processing: {filename}')
+
+        # 画像読み込み
+        img = Image.open(input_path).convert('RGB')
+        img_np = np.array(img)
+
+        # ===== 前処理 =====
+        img_np = preprocess_for_mosaic(img_np)
+
+        # ===== 1回目アップスケール =====
+        out1, _ = upscaler.enhance(img_np)
+
+        # ===== 2回目アップスケール =====
+        out2, _ = upscaler.enhance(out1)
+
+        # 保存
+        Image.fromarray(out2).save(output_path)
+
+        print(f'✅ Saved: {output_path}')
+
+    except Exception as e:
+        print(f'❌ Error: {filename} → {e}')
+
+print('🎉 全処理完了')
